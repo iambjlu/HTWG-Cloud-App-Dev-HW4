@@ -312,6 +312,9 @@ async function viewDetails(id) {
     // 同步 likes 資訊（右邊 detail 也要最新）
     await loadLikeInfo(id);
 
+    // comments
+    await loadComments(id);
+
   } catch (e) {
     error.value = 'Unable to load trip detail.';
   }
@@ -370,6 +373,90 @@ function viewAllTrips() {
   if (!isViewingSelf.value) return;
   showAll.value = true;
   filterText.value = '';
+}
+
+// ======================
+// Comments (Firestore)
+// ======================
+const comments = ref([]);              // 目前選中行程的留言列表
+const newCommentText = ref('');        // 新留言輸入框
+const loadingComments = ref(false);
+const postingComment = ref(false);
+
+// 從後端載入某行程的留言
+async function loadComments(itineraryId) {
+  if (!itineraryId) return;
+  loadingComments.value = true;
+  try {
+    const res = await axios.get(
+        `${API_BASE_URL}/api/itineraries/${itineraryId}/comments`
+    );
+    comments.value = res.data.comments || [];
+  } catch (err) {
+    console.error('Failed to load comments', err);
+    comments.value = [];
+  } finally {
+    loadingComments.value = false;
+  }
+}
+
+// 新增留言
+async function submitComment() {
+  if (!props.currentUserEmail) {
+    alert('Please login first.');
+    return;
+  }
+  const text = newCommentText.value.trim();
+  if (!text) {
+    alert('Comment cannot be empty.');
+    return;
+  }
+
+  if (!selectedItinerary.value) return;
+
+  postingComment.value = true;
+  try {
+    await axios.post(
+        `${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/comments`,
+        {
+          userEmail: props.currentUserEmail,
+          text
+        }
+    );
+
+    newCommentText.value = '';
+    // 重新載一次列表
+    await loadComments(selectedItinerary.value.id);
+  } catch (err) {
+    console.error('Failed to post comment', err);
+    alert('Failed to post comment.');
+  } finally {
+    postingComment.value = false;
+  }
+}
+
+// 刪除自己的留言
+async function deleteComment(commentId, commentEmail) {
+  // 只能刪自己
+  if (commentEmail !== props.currentUserEmail) return;
+
+  if (!selectedItinerary.value) return;
+
+  const ok = window.confirm('Delete this comment?');
+  if (!ok) return;
+
+  try {
+    await axios.delete(
+        `${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/comments/${commentId}`,
+        {
+          data: { userEmail: props.currentUserEmail }
+        }
+    );
+    await loadComments(selectedItinerary.value.id);
+  } catch (err) {
+    console.error('Failed to delete comment', err);
+    alert('Failed to delete comment.');
+  }
 }
 </script>
 
@@ -639,6 +726,78 @@ function viewAllTrips() {
               {{ likeCountMap[selectedItinerary.id] ?? 0 }}
               {{ (likeCountMap[selectedItinerary.id] ?? 0) === 1 ? 'like' : 'likes' }}
             </button>
+          </div>
+
+          <!-- 💬 Comments block -->
+          <div class="mt-8 border-t pt-4">
+            <h3 class="text-lg font-semibold text-gray-800 text-center mb-4">
+              Comments
+            </h3>
+
+            <!-- 新增留言 (只有登入者能送) -->
+            <div
+                v-if="props.currentUserEmail"
+                class="mb-6 flex flex-col items-stretch space-y-2"
+            >
+              <textarea
+                  v-model="newCommentText"
+                  rows="3"
+                  class="w-full border border-gray-300 rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  placeholder="Write a comment..."
+              ></textarea>
+
+              <button
+                  class="self-end bg-indigo-600 text-white text-sm font-medium px-3 py-1.5 rounded-md hover:bg-indigo-700 disabled:opacity-50"
+                  :disabled="postingComment"
+                  @click="submitComment"
+              >
+                {{ postingComment ? 'Posting...' : 'Post comment' }}
+              </button>
+            </div>
+
+            <!-- 留言列表 -->
+            <div v-if="loadingComments" class="text-sm text-gray-500 text-center">
+              Loading comments...
+            </div>
+
+            <div v-else-if="comments.length === 0" class="text-sm text-gray-500 text-center">
+              No comments yet.
+            </div>
+
+            <ul v-else class="space-y-4 max-h-64 overflow-y-auto">
+              <li
+                  v-for="c in comments"
+                  :key="c.id"
+                  class="border border-gray-200 rounded-md p-3 text-sm bg-gray-50"
+              >
+                <div class="flex justify-between items-start">
+                  <div class="text-gray-800 break-all">
+                    <a
+                        :href="'/?profile=' + c.email"
+                        class="text-indigo-600 hover:underline font-medium"
+                    >
+                      {{ c.email }}
+                    </a>
+                    <span class="ml-2 text-[11px] text-gray-400">
+                      {{ new Date(c.created_at).toLocaleString() }}
+                    </span>
+                  </div>
+
+                  <!-- 刪除按鈕 (只有本人看到) -->
+                  <button
+                      v-if="c.email === props.currentUserEmail"
+                      class="text-[14px] bg-transparent"
+                      @click="deleteComment(c.id, c.email)"
+                      title="Delete comment"
+                  >❌
+                  </button>
+                </div>
+
+                <p class="mt-2 text-gray-700 whitespace-pre-wrap break-words">
+                  {{ c.text }}
+                </p>
+              </li>
+            </ul>
           </div>
 
           <!-- edit / delete -->

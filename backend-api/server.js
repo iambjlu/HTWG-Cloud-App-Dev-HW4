@@ -518,6 +518,124 @@ app.get('/api/itineraries/:id/like/list', async (req, res) => {
 });
 
 /* ========================
+   NEW: Comments API (Firestore)
+   collection path:
+   comments/{itineraryId}/items/{autoId}
+
+   each comment doc:
+   {
+     email: string,
+     text: string,
+     created_at: number (Date.now())
+   }
+======================== */
+
+/**
+ * 取得某個行程的所有留言 (照 created_at 由新到舊或舊到新，你決定)
+ * GET /api/itineraries/:id/comments
+ */
+app.get('/api/itineraries/:id/comments', async (req, res) => {
+    try {
+        const itineraryId = req.params.id;
+
+        // comments/{itineraryId}/items/*
+        const qs = await db
+            .collection('comments')
+            .doc(itineraryId)
+            .collection('items')
+            .orderBy('created_at', 'asc') // 最舊在上，想反過來就 'desc'
+            .get();
+
+        const comments = qs.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        }));
+
+        return res.send({ comments });
+    } catch (err) {
+        console.error('get comments error:', err);
+        return res.status(500).send({ message: 'Failed to load comments' });
+    }
+});
+
+/**
+ * 新增留言
+ * POST /api/itineraries/:id/comments
+ * body: { userEmail: string, text: string }
+ */
+app.post('/api/itineraries/:id/comments', async (req, res) => {
+    try {
+        const itineraryId = req.params.id;
+        const { userEmail, text } = req.body;
+
+        if (!userEmail || !text || !text.trim()) {
+            return res.status(400).send({ message: 'Missing userEmail or text' });
+        }
+
+        // push comment
+        const newDocRef = await db
+            .collection('comments')
+            .doc(itineraryId)
+            .collection('items')
+            .add({
+                email: userEmail,
+                text: text.trim(),
+                created_at: Date.now()
+            });
+
+        return res.status(201).send({
+            id: newDocRef.id,
+            email: userEmail,
+            text: text.trim(),
+            created_at: Date.now()
+        });
+    } catch (err) {
+        console.error('add comment error:', err);
+        return res.status(500).send({ message: 'Failed to add comment' });
+    }
+});
+
+/**
+ * 刪除自己的留言
+ * DELETE /api/itineraries/:id/comments/:commentId
+ * body: { userEmail: string }
+ */
+app.delete('/api/itineraries/:id/comments/:commentId', async (req, res) => {
+    try {
+        const itineraryId = req.params.id;
+        const commentId = req.params.commentId;
+        const { userEmail } = req.body;
+
+        if (!userEmail) {
+            return res.status(400).send({ message: 'Missing userEmail' });
+        }
+
+        const commentRef = db
+            .collection('comments')
+            .doc(itineraryId)
+            .collection('items')
+            .doc(commentId);
+
+        const snap = await commentRef.get();
+        if (!snap.exists) {
+            return res.status(404).send({ message: 'Comment not found' });
+        }
+
+        const data = snap.data();
+        if (data.email !== userEmail) {
+            return res.status(403).send({ message: 'Not allowed to delete this comment' });
+        }
+
+        await commentRef.delete();
+        return res.send({ message: 'Comment deleted' });
+    } catch (err) {
+        console.error('delete comment error:', err);
+        return res.status(500).send({ message: 'Failed to delete comment' });
+    }
+});
+
+
+/* ========================
    start server
 ======================== */
 const PORT = process.env.PORT || 3000;
