@@ -1,11 +1,79 @@
 // index.js
 require('dotenv').config(); // Load .env file
 
+const multer = require('multer');
+const { Storage } = require('@google-cloud/storage');
 const express = require('express');
 const mysql = require('mysql2/promise');
-const cors = require('cors');
-
 const app = express();
+
+// Middleware Setup
+const cors = require('cors');
+// app.use(cors({
+//     origin: ['https://你的正式網域.com'],
+// }));
+app.use(cors());
+app.use(express.json());
+
+
+// 解析 service account JSON 從 env
+let storage;
+if (process.env.GCP_SERVICE_ACCOUNT_JSON) {
+    const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_JSON);
+    storage = new Storage({
+        projectId: creds.project_id,
+        credentials: {
+            client_email: creds.client_email,
+            private_key: creds.private_key
+        }
+    });
+} else {
+    // fallback: default GOOGLE_APPLICATION_CREDENTIALS path logic
+    storage = new Storage();
+}
+
+const BUCKET_NAME = process.env.GCP_BUCKET_NAME || 'htwg-cloudapp-hw.firebasestorage.app';
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.post('/api/upload-avatar', upload.single('avatar'), async (req, res) => {
+    try {
+        const email = req.body.email;
+        const file = req.file;
+
+        if (!email) {
+            return res.status(400).send({ message: 'Missing email.' });
+        }
+        if (!file) {
+            return res.status(400).send({ message: 'Missing avatar file.' });
+        }
+
+        if (file.mimetype !== 'image/jpeg' && file.mimetype !== 'image/jpg') {
+            return res.status(400).send({ message: 'Only JPEG allowed.' });
+        }
+
+        const destFileName = `avatar/${email}.jpg`;
+
+        const bucket = storage.bucket(BUCKET_NAME);
+        const gcFile = bucket.file(destFileName);
+
+        await gcFile.save(file.buffer, {
+            metadata: {
+                contentType: 'image/jpeg',
+                cacheControl: 'public, max-age=3600'
+            },
+            resumable: false
+        });
+
+        await gcFile.makePublic().catch(() => {});
+
+        return res.status(200).send({ message: 'Avatar uploaded.' });
+    } catch (err) {
+        console.error('Upload avatar error:', err);
+        return res.status(500).send({ message: 'Failed to upload avatar.' });
+    }
+});
+
 
 // 小工具：把日期物件或字串轉成 "YYYY-MM-DD"
 // function formatDate(date) {
@@ -16,7 +84,7 @@ function formatDate(date) {
     if (!date) return null;
 
     const d = new Date(date);
-    d.setDate(d.getDate()); // 加一天
+    d.setDate(d.getDate());
 
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -37,14 +105,7 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// Middleware Setup
-app.use(cors({
-    origin: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-}));
-app.use(express.json());
+
 
 // --- API Routes Implementation ---
 
@@ -230,6 +291,8 @@ app.delete('/api/itineraries/:id', async (req, res) => {
         res.status(500).send({ message: 'Server error during itinerary deletion.' });
     }
 });
+
+
 
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';

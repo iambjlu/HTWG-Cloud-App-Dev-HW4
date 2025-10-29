@@ -98,8 +98,8 @@ watch(userEmail, () => {
   <div class="min-h-screen bg-gray-100 p-1 md:p-2">
     <!-- Header -->
     <header class="bg-indigo-600 text-white p-2 rounded-lg shadow-lg mb-4 flex justify-between items-center">
-      <h1 class="text-2xl font-bold flex items-center space-x-2">
-        <span>Trip Planner</span>
+      <h1 class="text-2xl font-bold flex items-center space-x-2 ">
+        <strong><span><a href="/" style="color:white">Trip Planner</a></span></strong>
 
         <!-- 只有在看別人的時候顯示 badge -->
         <span
@@ -183,10 +183,11 @@ watch(userEmail, () => {
 
         <!-- 右側 -->
         <div class="lg:col-span-7 space-y-4">
-          <!-- 個人資料卡：頭貼 + email -->
-          <ProfileCard :userEmail="effectiveEmail" />
+          <ProfileCard
+              :userEmail="effectiveEmail"
+              :currentUserEmail="userEmail"
+          />
 
-          <!-- 行程列表 / 詳情 -->
           <ItineraryManager
               :travellerEmail="effectiveEmail"
               :currentUserEmail="userEmail"

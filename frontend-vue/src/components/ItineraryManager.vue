@@ -188,7 +188,7 @@ async function viewDetails(id) {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/itineraries/detail/${id}`);
     const data = response.data;
-
+    await loadLikeStatus();
     // 如果現在是「不是 showAll」狀態（=只看某個人），
     // 就只能看該使用者擁有的行程，避免偷看別人的
     if (!showAll.value) {
@@ -208,6 +208,58 @@ async function viewDetails(id) {
 
   } catch (e) {
     error.value = 'Unable to load trip detail.';
+  }
+
+}
+
+// --------- Like System ---------
+const likeCount = ref(0);
+const likedByMe = ref(false);
+const likesPopupVisible = ref(false);
+const likesList = ref([]);
+
+async function loadLikeStatus() {
+  if (!selectedItinerary.value) return;
+  try {
+    const res = await axios.get(
+        `${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/like-status`,
+        { params: { userEmail: props.currentUserEmail } }
+    );
+    likeCount.value = res.data.count;
+    likedByMe.value = res.data.liked;
+  } catch (err) {
+    console.error('Failed to load like status', err);
+  }
+}
+
+async function toggleLike() {
+  if (!selectedItinerary.value) return;
+  const id = selectedItinerary.value.id;
+  const email = props.currentUserEmail;
+
+  try {
+    if (likedByMe.value) {
+      await axios.post(`${API_BASE_URL}/api/itineraries/${id}/unlike`, { userEmail: email });
+      likedByMe.value = false;
+      likeCount.value = Math.max(0, likeCount.value - 1);
+    } else {
+      await axios.post(`${API_BASE_URL}/api/itineraries/${id}/like`, { userEmail: email });
+      likedByMe.value = true;
+      likeCount.value++;
+    }
+  } catch (e) {
+    console.error('Toggle like failed', e);
+  }
+}
+
+async function showLikesList() {
+  if (!selectedItinerary.value) return;
+  try {
+    const res = await axios.get(`${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/likes-list`);
+    likesList.value = res.data || [];
+    likesPopupVisible.value = true;
+  } catch (err) {
+    alert('Failed to load likes list.');
   }
 }
 
@@ -360,7 +412,12 @@ function viewAllTrips() {
         >
           <p class="font-semibold text-gray-800">
             {{ it.title }}
-            <span class="text-sm text-gray-500">({{ it.traveller_email }})</span>
+            <span class="text-sm text-gray-500">(<a
+                :href="'/?profile=' + it.traveller_email"
+                class="text-indigo-600 hover:underline"
+            >
+              {{ it.traveller_email }}
+            </a>)</span>
           </p>
           <p class="text-sm text-gray-600">{{ it.short_description }}</p>
           <p class="text-xs text-gray-500 mt-1">
@@ -389,7 +446,12 @@ function viewAllTrips() {
           </h2>
 
           <div class="space-y-2 text-gray-700">
-            <p><strong>Owner:</strong> {{ selectedItinerary.traveller_email }}</p>
+            <p><strong>Owner:</strong> <a
+                :href="'/?profile=' + selectedItinerary.traveller_email"
+                class="text-indigo-600 hover:underline"
+            >
+              {{ selectedItinerary.traveller_email }}
+            </a></p>
             <p><strong>Destination:</strong> {{ selectedItinerary.destination }}</p>
             <p><strong>Starting Date:</strong> {{ selectedItinerary.start_date }}</p>
             <p><strong>Ending Date:</strong> {{ selectedItinerary.end_date }}</p>
