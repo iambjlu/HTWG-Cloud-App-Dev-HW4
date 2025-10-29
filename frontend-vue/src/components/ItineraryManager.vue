@@ -1,4 +1,3 @@
-<!--ItineraryManager.vue-->
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue';
 import axios from 'axios';
@@ -10,7 +9,7 @@ const props = defineProps({
     type: String,
     required: true
   },
-  currentUserEmail: {           // 登入者 email
+  currentUserEmail: {
     type: String,
     required: true
   },
@@ -19,10 +18,9 @@ const props = defineProps({
 
 const emit = defineEmits(['no-data']);
 
-/* ---------------- state ---------------- */
-const avatarUrl = ref('');
-const rawItineraries = ref([]);       // 後端回的一整包 (全部人)
-const userItineraries = ref([]);      // 只屬於 travellerEmail 的
+/* ---------------- base state ---------------- */
+const rawItineraries = ref([]);
+const userItineraries = ref([]);
 const loading = ref(false);
 const error = ref('');
 
@@ -31,52 +29,39 @@ const isEditing = ref(false);
 const editForm = ref({});
 const editMessage = ref('');
 
-// 顯示全站(true) or 顯示特定使用者(false)
+/* view mode: 全部(true) or 只看該使用者(false) */
 const showAll = ref(false);
 
-// 搜尋欄、日期篩選
+/* 搜尋欄 */
 const filterText = ref('');
 const filterStart = ref('');
 const filterEnd = ref('');
 
-/* ---------------- computed: 現在是不是在看「自己」 ---------------- */
+/* ---------------- computed: 是否在看自己 ---------------- */
 const isViewingSelf = computed(() => {
   const a = (props.travellerEmail || '').toLowerCase();
   const b = (props.currentUserEmail || '').toLowerCase();
   return a && b && a === b;
 });
 
-/* ---------------- avatar (外觀) ---------------- */
-function onAvatarError() {
-  avatarUrl.value = 'https://storage.googleapis.com/htwg-cloudapp-hw.firebasestorage.app/avatar/default.jpg';
-}
-onMounted(() => {
-  if (props.travellerEmail) {
-    avatarUrl.value = `https://storage.googleapis.com/htwg-cloudapp-hw.firebasestorage.app/avatar/${props.travellerEmail}.jpg`;
-  }
-});
-
 /* ---------------- 預設顯示模式 ----------------
    - 看自己: showAll = true  (首頁可以看到所有人)
    - 看別人: showAll = false (只能看對方)
-   搜尋框一律留空，不自動塞 email
+   搜尋框保持空
 */
 watch(
     [() => props.travellerEmail, () => props.currentUserEmail],
     () => {
       if (isViewingSelf.value) {
-        showAll.value = true;   // 我 -> 全部
-        filterText.value = '';  // 搜尋框預設空
+        showAll.value = true;
+        filterText.value = '';
       } else {
-        showAll.value = false;  // 別人 -> 只看那個人
-        filterText.value = '';  // 依你需求，不要自動塞對方 email
+        showAll.value = false;
+        filterText.value = '';
       }
     },
     { immediate: true }
 );
-
-// 🔥 把原本那個 "watch travellerEmail -> 塞搜尋框 email" 的 watcher 整段砍掉
-// （你說不想預設帶 email，我們就不要塞）
 
 /* ---------------- 抓行程資料 ---------------- */
 async function fetchItineraries() {
@@ -89,8 +74,7 @@ async function fetchItineraries() {
   }
 
   try {
-    // 你的後端路由名是 /by-email/:email
-    // 但目前回傳的是所有行程 (排序過)，我們就吃整包
+    // 後端目前回傳全部行程
     const response = await axios.get(
         `${API_BASE_URL}/api/itineraries/by-email/${props.travellerEmail}`
     );
@@ -99,17 +83,16 @@ async function fetchItineraries() {
 
     const who = (props.travellerEmail || '').toLowerCase();
 
-    // 把屬於目前正在看的 user's trips 抽出來
     userItineraries.value = rawItineraries.value.filter(it => {
       return (it.traveller_email || '').toLowerCase() === who;
     });
 
-    // 如果我是在看別人，然後那個人完全沒行程 -> 回首頁
+    // 看別人但對方沒行程 => 叫父層彈回首頁
     if (!isViewingSelf.value && userItineraries.value.length === 0) {
       emit('no-data');
     }
 
-    // 如果右側詳細面板目前選的行程不在「可見清單」裡，就清掉
+    // 如果 detail pane 正在看的行程不再可見列表裡，就清掉
     const visibleIds = new Set(
         (showAll.value ? rawItineraries.value : userItineraries.value).map(it => it.id)
     );
@@ -117,7 +100,6 @@ async function fetchItineraries() {
       selectedItinerary.value = null;
       isEditing.value = false;
     }
-
   } catch (e) {
     error.value = 'Unable to load trips. Check your Internet connection.';
     if (!isViewingSelf.value) {
@@ -128,7 +110,7 @@ async function fetchItineraries() {
   }
 }
 
-// 第一次 + travellerEmail 改變就抓資料
+/* 初次 / travellerEmail 變動就抓資料 */
 watch(
     () => props.travellerEmail,
     (newEmail) => {
@@ -137,7 +119,7 @@ watch(
     { immediate: true }
 );
 
-// 父層 refreshSignal -> 重抓
+/* 父層 refreshSignal -> 重抓 */
 watch(
     () => props.refreshSignal,
     () => { fetchItineraries(); }
@@ -179,6 +161,129 @@ const filteredItineraries = computed(() => {
   });
 });
 
+/* =======================================================
+   LIKE SYSTEM (列表 + 詳細區共用，單一來源)
+======================================================= */
+
+// likeMap[tripId] = true/false (我有沒有按讚)
+const likeMap = ref({});
+
+// likeCountMap[tripId] = 數字
+const likeCountMap = ref({});
+
+// popup: 顯示誰按讚
+const likeListVisible = ref(false);
+const likeListUsers = ref([]);
+const likeListTripId = ref(null);
+
+// 載入某個行程的 like 狀態 (count + 我有沒有按)
+async function loadLikeInfo(itineraryId) {
+  if (!itineraryId) return;
+  try {
+    // 總數
+    const countRes = await axios.get(
+        `${API_BASE_URL}/api/itineraries/${itineraryId}/like/count`
+    );
+    likeCountMap.value[itineraryId] = countRes.data.count ?? 0;
+
+    // 全部email -> 用來判斷 "我有沒有按"
+    const listRes = await axios.get(
+        `${API_BASE_URL}/api/itineraries/${itineraryId}/like/list`
+    );
+    const users = listRes.data.users || [];
+    likeMap.value[itineraryId] = users.some(
+        u => u.email === props.currentUserEmail
+    );
+  } catch (err) {
+    console.error('Failed to load like info', err);
+    if (likeCountMap.value[itineraryId] === undefined) {
+      likeCountMap.value[itineraryId] = 0;
+    }
+    if (likeMap.value[itineraryId] === undefined) {
+      likeMap.value[itineraryId] = false;
+    }
+  }
+}
+
+// 幫目前畫面上所有 filtered trips 載入 like 狀態
+async function loadLikesForVisibleTrips() {
+  const ids = filteredItineraries.value.map(it => it.id);
+  await Promise.all(ids.map(id => loadLikeInfo(id)));
+}
+
+// watch 列表變化 -> 重新載入likes
+watch(filteredItineraries, () => {
+  loadLikesForVisibleTrips();
+});
+// 初次載入 rawItineraries 時也載
+watch(
+    () => rawItineraries.value.length,
+    () => {
+      loadLikesForVisibleTrips();
+    }
+);
+
+// 切讚
+async function toggleLike(itineraryId) {
+  if (!props.currentUserEmail) {
+    alert('Please login first.');
+    return;
+  }
+  try {
+    const res = await axios.post(
+        `${API_BASE_URL}/api/itineraries/${itineraryId}/like/toggle`,
+        { userEmail: props.currentUserEmail }
+    );
+
+    const likedNow = !!res.data.liked;
+    likeMap.value[itineraryId] = likedNow;
+
+    if (likedNow) {
+      likeCountMap.value[itineraryId] =
+          (likeCountMap.value[itineraryId] || 0) + 1;
+    } else {
+      likeCountMap.value[itineraryId] =
+          (likeCountMap.value[itineraryId] || 0) - 1;
+      if (likeCountMap.value[itineraryId] < 0) {
+        likeCountMap.value[itineraryId] = 0;
+      }
+    }
+
+    // 如果我正好在看這個詳細頁，順便同步右邊角落顯示
+    if (
+        selectedItinerary.value &&
+        selectedItinerary.value.id === itineraryId
+    ) {
+      // no extra call, we already updated the refs above
+    }
+
+  } catch (err) {
+    console.error('Toggle like failed', err);
+    alert('Like failed.');
+  }
+}
+
+// 顯示誰按讚的清單
+async function showLikeList(itineraryId) {
+  try {
+    const res = await axios.get(
+        `${API_BASE_URL}/api/itineraries/${itineraryId}/like/list`
+    );
+    likeListUsers.value = res.data.users || [];
+    likeListTripId.value = itineraryId;
+    likeListVisible.value = true;
+  } catch (err) {
+    console.error('Failed to load like list', err);
+    alert('Failed to load who liked this.');
+  }
+}
+
+function closeLikeList() {
+  likeListVisible.value = false;
+  likeListTripId.value = null;
+  likeListUsers.value = [];
+}
+
 /* ---------------- 查看詳細 ---------------- */
 async function viewDetails(id) {
   error.value = '';
@@ -188,9 +293,8 @@ async function viewDetails(id) {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/itineraries/detail/${id}`);
     const data = response.data;
-    await loadLikeStatus();
-    // 如果現在是「不是 showAll」狀態（=只看某個人），
-    // 就只能看該使用者擁有的行程，避免偷看別人的
+
+    // 如果只允許看特定使用者
     if (!showAll.value) {
       const who = (props.travellerEmail || '').toLowerCase();
       const ownerLower = (data.traveller_email || '').toLowerCase();
@@ -202,64 +306,14 @@ async function viewDetails(id) {
       }
     }
 
-    // showAll=true (首頁看自己 + 全站模式) -> 可以看細節
     selectedItinerary.value = data;
     editForm.value = { ...data };
 
+    // 同步 likes 資訊（右邊 detail 也要最新）
+    await loadLikeInfo(id);
+
   } catch (e) {
     error.value = 'Unable to load trip detail.';
-  }
-
-}
-
-// --------- Like System ---------
-const likeCount = ref(0);
-const likedByMe = ref(false);
-const likesPopupVisible = ref(false);
-const likesList = ref([]);
-
-async function loadLikeStatus() {
-  if (!selectedItinerary.value) return;
-  try {
-    const res = await axios.get(
-        `${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/like-status`,
-        { params: { userEmail: props.currentUserEmail } }
-    );
-    likeCount.value = res.data.count;
-    likedByMe.value = res.data.liked;
-  } catch (err) {
-    console.error('Failed to load like status', err);
-  }
-}
-
-async function toggleLike() {
-  if (!selectedItinerary.value) return;
-  const id = selectedItinerary.value.id;
-  const email = props.currentUserEmail;
-
-  try {
-    if (likedByMe.value) {
-      await axios.post(`${API_BASE_URL}/api/itineraries/${id}/unlike`, { userEmail: email });
-      likedByMe.value = false;
-      likeCount.value = Math.max(0, likeCount.value - 1);
-    } else {
-      await axios.post(`${API_BASE_URL}/api/itineraries/${id}/like`, { userEmail: email });
-      likedByMe.value = true;
-      likeCount.value++;
-    }
-  } catch (e) {
-    console.error('Toggle like failed', e);
-  }
-}
-
-async function showLikesList() {
-  if (!selectedItinerary.value) return;
-  try {
-    const res = await axios.get(`${API_BASE_URL}/api/itineraries/${selectedItinerary.value.id}/likes-list`);
-    likesList.value = res.data || [];
-    likesPopupVisible.value = true;
-  } catch (err) {
-    alert('Failed to load likes list.');
   }
 }
 
@@ -307,17 +361,13 @@ async function deleteItinerary() {
   }
 }
 
-/* ---------------- 切換按鈕 ---------------- */
+/* ---------------- 切換顯示按鈕 ---------------- */
 function viewOnlyThisUser() {
   showAll.value = false;
-  // 不要預設塞 email 到搜尋欄
   filterText.value = '';
 }
-
 function viewAllTrips() {
-  // 只有在看自己時才允許
   if (!isViewingSelf.value) return;
-
   showAll.value = true;
   filterText.value = '';
 }
@@ -325,15 +375,69 @@ function viewAllTrips() {
 
 <template>
   <div class="grid grid-cols-1 lg gap-6 items-start">
+    <!-- GLOBAL like-list popup -->
+    <div
+        v-if="likeListVisible"
+        class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+        @click.self="closeLikeList"
+    >
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-sm p-4">
+        <div class="flex justify-between items-start mb-3">
+          <h3 class="text-lg font-semibold text-gray-800">
+            Likes
+          </h3>
+<!--          <button-->
+<!--              class="text-gray-400 hover:text-gray-600 text-xl leading-none"-->
+<!--              @click="closeLikeList"-->
+<!--          >-->
+<!--            ×-->
+<!--          </button>-->
+        </div>
+
+        <div v-if="likeListUsers.length === 0" class="text-sm text-gray-500">
+          Nobody yet.
+        </div>
+
+        <ul v-else class="space-y-2 max-h-48 overflow-y-auto">
+          <li
+              v-for="u in likeListUsers"
+              :key="u.email"
+              class="flex items-center justify-between text-sm text-gray-700 border-b pb-1"
+          ><span class="break-all">
+            <a
+                :href="'/?profile=' + u.email"
+                class="text-indigo-600 hover:underline">{{ u.email }}
+              </a>
+          </span>
+            <span class="text-[10px] text-gray-400">
+              {{ new Date(u.liked_at).toLocaleString() }}
+            </span>
+          </li>
+        </ul>
+
+        <div class="mt-4 flex justify-end">
+          <button
+              class="px-3 py-1 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+              @click="closeLikeList"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- LIST -->
-    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 overflow-y-auto max-h-[80vh]">
+    <div
+        class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 overflow-y-auto max-h-[80vh]"
+    >
       <!-- Header -->
-      <div class="flex justify-between items-start border-b pb-3 mb-4 flex-col md:flex-row md:items-center">
+      <div
+          class="flex justify-between items-start border-b pb-3 mb-4 flex-col md:flex-row md:items-center"
+      >
         <div class="flex flex-col">
           <div class="flex items-center space-x-2">
             <h2 class="text-xl font-semibold text-gray-800">Trips</h2>
 
-            <!-- 模式 badge -->
             <span
                 class="text-[11px] font-medium rounded px-2 py-0.5"
                 :class="showAll
@@ -347,7 +451,10 @@ function viewAllTrips() {
           <p v-if="loading" class="text-indigo-600 text-sm font-medium mt-1">
             ⏳ Loading ⏳
           </p>
-          <p v-if="error && !loading" class="text-red-600 text-sm font-medium mt-1">
+          <p
+              v-if="error && !loading"
+              class="text-red-600 text-sm font-medium mt-1"
+          >
             {{ error }}
           </p>
         </div>
@@ -360,11 +467,15 @@ function viewAllTrips() {
         </button>
       </div>
 
-      <!-- Search / Filter Row -->
-      <div class="mb-4 flex flex-col md:flex-row md:items-center md:space-x-3 space-y-3 md:space-y-0">
-        <!-- Search box -->
+      <!-- Search Row -->
+      <div
+          class="mb-4 flex flex-col md:flex-row md:items-center md:space-x-3 space-y-3 md:space-y-0"
+      >
         <div class="flex items-center flex-grow space-x-2">
-          <label class="text-sm font-medium text-gray-700 whitespace-nowrap">Search:</label>
+          <label
+              class="text-sm font-medium text-gray-700 whitespace-nowrap"
+          >Search:</label
+          >
           <input
               type="text"
               v-model="filterText"
@@ -373,9 +484,7 @@ function viewAllTrips() {
           />
         </div>
 
-        <!-- Buttons -->
         <div class="flex items-center justify-end space-x-2 shrink-0">
-          <!-- 只看這個使用者 -->
           <button
               type="button"
               class="py-2 px-4 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 transition"
@@ -384,7 +493,6 @@ function viewAllTrips() {
             View Only This User
           </button>
 
-          <!-- 看全部：只有在看自己時可以按 -->
           <button
               type="button"
               class="py-2 px-4 rounded-md border transition"
@@ -412,58 +520,129 @@ function viewAllTrips() {
         >
           <p class="font-semibold text-gray-800">
             {{ it.title }}
-            <span class="text-sm text-gray-500">(<a
-                :href="'/?profile=' + it.traveller_email"
-                class="text-indigo-600 hover:underline"
-            >
-              {{ it.traveller_email }}
-            </a>)</span>
+            <span class="text-sm text-gray-500">
+              (
+              <a
+                  :href="'/?profile=' + it.traveller_email"
+                  class="text-indigo-600 hover:underline"
+                  @click.stop
+              >
+                {{ it.traveller_email }}
+              </a>
+              )
+            </span>
           </p>
-          <p class="text-sm text-gray-600">{{ it.short_description }}</p>
-          <p class="text-xs text-gray-500 mt-1">
-            {{ it.start_date }} ~ {{ it.end_date }}
+
+          <!-- second line: desc + dates -->
+          <p class="text-sm text-gray-600">
+            {{ it.short_description }}
+            <span class="ml-1 text-xs text-gray-500">
+              {{ it.start_date }} ~ {{ it.end_date }}
+            </span>
           </p>
+
+          <!-- like row -->
+          <div class="flex items-center justify-start mt-2 text-xs text-gray-500">
+            <div class="flex items-center space-x-2">
+              <!-- 愛心按鈕 -->
+              <button
+                  class="flex items-center space-x-2 text-sm font-medium px-3 py-1.5 rounded-md border"
+                  :class="likeMap[it.id]
+                ? 'bg-gray-200 text-gray-800 border-gray-300 hover:bg-gray-300'
+                : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200'"
+                  @click.stop="toggleLike(it.id)"
+                  :title="likeMap[it.id] ? 'Unlike' : 'Like'"
+
+              >
+                <span class="text-lg leading-none mr-1">
+                  {{ likeMap[it.id] ? '❤️' : '🤍' }}
+                </span>
+                <span class="font-medium">{{ likeMap[it.id] ? 'Liked' : 'Like' }}</span>
+              </button>
+
+              <!-- 數字（灰底圓角，黑字），點了看名單 -->
+              <button
+                  class="text-[11px] font-medium text-gray-800 bg-gray-200 rounded-full px-2 py-0.5 hover:bg-gray-300"
+                  @click.stop="showLikeList(it.id)"
+              >
+                {{ likeCountMap[it.id] ?? 0 }}
+              </button>
+            </div>
+          </div>
         </li>
       </ul>
 
-      <!-- No result -->
       <p v-else-if="!loading && !error" class="text-gray-500 italic">
         No result
       </p>
     </div>
 
     <!-- DETAIL -->
-    <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 overflow-y-auto max-h-[80vh]">
+    <div
+        class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 overflow-y-auto max-h-[80vh]"
+    >
       <h2 v-if="!selectedItinerary" class="text-xl font-semibold text-gray-400">
         Select a trip to view details
       </h2>
 
       <div v-else>
-        <!-- View -->
+        <!-- VIEW MODE -->
         <div v-if="!isEditing">
-          <h2 class="text-3xl font-bold mb-4 text-gray-800 border-b pb-2">
+          <h2
+              class="text-3xl font-bold mb-4 text-gray-800 border-b pb-2 text-center"
+          >
             {{ selectedItinerary.title }}
           </h2>
 
-          <div class="space-y-2 text-gray-700">
-            <p><strong>Owner:</strong> <a
-                :href="'/?profile=' + selectedItinerary.traveller_email"
-                class="text-indigo-600 hover:underline"
-            >
-              {{ selectedItinerary.traveller_email }}
-            </a></p>
+          <div class="space-y-2 text-gray-700 text-center border-b pb-4">
+            <p>
+              <strong>Owner:</strong>
+              <a
+                  :href="'/?profile=' + selectedItinerary.traveller_email"
+                  class="text-indigo-600 hover:underline"
+              >
+                {{ selectedItinerary.traveller_email }}
+              </a>
+            </p>
             <p><strong>Destination:</strong> {{ selectedItinerary.destination }}</p>
             <p><strong>Starting Date:</strong> {{ selectedItinerary.start_date }}</p>
             <p><strong>Ending Date:</strong> {{ selectedItinerary.end_date }}</p>
             <p><strong>Short Description:</strong> {{ selectedItinerary.short_description }}</p>
+          </div>
 
-            <p class="mt-4 border-t pt-3"><strong>Long Description:</strong></p>
-            <p class="whitespace-pre-wrap">
+          <div class="pt-4 border-b pb-4 text-center">
+            <p class="font-semibold text-gray-800">Long Description:</p>
+            <p class="whitespace-pre-wrap text-gray-700 mt-2">
               {{ selectedItinerary.detail_description }}
             </p>
           </div>
 
-          <div class="flex space-x-3 mt-6 border-t pt-4">
+          <!-- ❤️ Like block (detail view uses same refs/maps) -->
+          <div class="mt-4 flex flex-col items-center space-y-3">
+            <div class="space-y-3"></div>
+            <button
+                @click="toggleLike(selectedItinerary.id)"
+                class="flex items-center space-x-2 text-sm font-medium px-3 py-1.5 rounded-md border"
+                :class="likeMap[selectedItinerary.id]
+                ? 'bg-gray-200 text-gray-800 border-gray-300 hover:bg-gray-300'
+                : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200'"
+            >
+              <span class="text-lg leading-none">
+                {{ likeMap[selectedItinerary.id] ? '❤️' : '🤍' }}
+              </span>
+              <span>{{ likeMap[selectedItinerary.id] ? 'Liked' : 'Like' }}</span>
+            </button>
+            <button
+                class="text-[11px] font-medium text-gray-800 bg-gray-200 rounded-full px-2 py-0.5 hover:bg-gray-300"
+                @click="showLikeList(selectedItinerary.id)"
+            >
+              {{ likeCountMap[selectedItinerary.id] ?? 0 }}
+              {{ (likeCountMap[selectedItinerary.id] ?? 0) === 1 ? 'like' : 'likes' }}
+            </button>
+          </div>
+
+          <!-- edit / delete -->
+          <div class="flex space-x-3 mt-6 border-t pt-4 justify-center">
             <button
                 v-if="selectedItinerary.traveller_email === props.currentUserEmail"
                 class="py-2 px-4 rounded-md text-white bg-blue-600 hover:bg-blue-700 transition"
@@ -482,9 +661,11 @@ function viewAllTrips() {
           </div>
         </div>
 
-        <!-- Edit -->
+        <!-- EDIT MODE -->
         <div v-else>
-          <h3 class="text-2xl font-bold mb-4 text-gray-800 border-b pb-2">
+          <h3
+              class="text-2xl font-bold mb-4 text-gray-800 border-b pb-2 text-center"
+          >
             Edit trip: {{ editForm.title }}
           </h3>
 
@@ -549,7 +730,7 @@ function viewAllTrips() {
               ></textarea>
             </div>
 
-            <div class="flex space-x-3 pt-2">
+            <div class="flex space-x-3 pt-2 justify-center">
               <button
                   class="py-2 px-4 rounded-md text-white bg-green-600 hover:bg-green-700 transition"
                   type="submit"
@@ -571,7 +752,7 @@ function viewAllTrips() {
                 'text-green-600': editMessage.includes('Successfully'),
                 'text-red-600': !editMessage.includes('Successfully')
               }"
-                class="mt-3 text-sm font-medium"
+                class="mt-3 text-sm font-medium text-center"
             >
               {{ editMessage }}
             </p>
